@@ -4,6 +4,13 @@ import * as messageLib from './message'
 import * as channelLib from './channel'
 import * as channelStateLib from './channel-state'
 import * as stateMachineLib from './state-machine'
+import {
+  Approval, BlockchainEvent, BlockchainEventType, ChannelClosed, ChannelDeleted, ChannelNew, ChannelNewBalance,
+  ChannelSecretRevealed,
+  ChannelSettled,
+  Refund, Transfer, TransferUpdated
+} from '../types'
+import { infuraMonitoring, Monitoring } from '../'
 
 const events = require('events')
 
@@ -25,6 +32,8 @@ const events = require('events')
  * @property {object} blockchain
  */
 export class Engine extends events.EventEmitter {
+  eventMonitor?: Monitoring
+
   /**
    * @constructror.
    * @param {Buffer} address - your ethereum address; ETH Address is merely the last 20 bytes of the keccak256 hash of the public key given the public private key pair.
@@ -373,6 +382,78 @@ export class Engine extends events.EventEmitter {
    */
   handleError (err) {
     console.error(err)
+  }
+
+  /**
+   * @param {BlockchainEventType} type - name of the event
+   * @param {BlockchainEvent} event - the event object
+   * @param {Buffer} channel
+   */
+  handleBlockchainEvent (type: BlockchainEventType, event: BlockchainEvent, channel: Buffer = Buffer.alloc(20)) {
+    switch (type) {
+
+      case 'ChannelNewBalance': {
+        const data = event as ChannelNewBalance
+        this.onChannelNewBalance(data.token_address, data.participant, data.balance)
+        break
+      }
+
+      case 'Refund': {
+        const data = event as Refund
+        this.onRefund(channel, data.receiver, data.amount)
+        break
+      }
+
+      case 'ChannelClosed': {
+        const data = event as ChannelClosed
+        this.onChannelClose(channel, data.closing_address)
+        break
+      }
+
+      case 'TransferUpdated': {
+        const data = event as TransferUpdated
+        this.onTransferUpdated(channel, data.node_address)
+        break
+      }
+
+      case 'ChannelSecretRevealed': {
+        const data = event as ChannelSecretRevealed
+        this.onChannelSecretRevealed(channel, data.secret, data.receiver_address)
+        break
+      }
+
+      case 'ChannelSettled': {
+        this.onChannelSettled(channel)
+        break
+      }
+
+      case 'ChannelNew': {
+        const data = event as ChannelNew
+        this.onChannelNew(data.netting_channel, data.participant1, data.participant2, data.settle_timeout)
+        break
+      }
+
+      case 'ChannelDeleted': {
+        // no handler function for this one
+        break
+      }
+
+      case 'FeesCollected': {
+        // no handler function for this one
+        break
+      }
+
+      case 'Approval': {
+        const data = event as Approval
+        this.onApproval(data.owner, data.spender, data.value)
+        break
+      }
+
+      case 'Transfer': {
+        // TODO
+        break
+      }
+    }
   }
 
   /** * Blockchain callback when a new block is mined and blockNumber increases.
@@ -766,5 +847,45 @@ export class Engine extends events.EventEmitter {
    */
   onRefund (channelAddress, receiverAddress, amount) {
     return true
+  }
+
+  runEventMonitor (channelManagerAddress, tokenAddresses = []) {
+    this.eventMonitor = new Monitoring({
+      // TODO edit blockchain service to accept infura network and token instead of url
+      ...infuraMonitoring('ropsten', ''),
+
+      channelManagerAddress: channelManagerAddress,
+      tokenAddresses: tokenAddresses,
+
+      // TODO persistence?
+      storage: {
+        getItem: (id) => Promise.resolve(null),
+        setItem: (id, item) => Promise.resolve(true),
+        getAllKeys: () => Promise.resolve([]),
+
+        multiGet: (keys) => Promise.resolve([]),
+        multiSet: (xs) => Promise.resolve(true)
+      }
+    })
+
+    this.eventMonitor.on('ChannelNew', (event) => {
+      this.eventMonitor!.subscribeAddress(`0x${event.netting_channel.toString('hex')}`)
+    })
+
+    const events: BlockchainEventType[] = [
+      'ChannelNewBalance',
+      'Refund',
+      'ChannelClosed',
+      'TransferUpdated',
+      'ChannelSecretRevealed',
+      'ChannelSettled',
+      'ChannelNew',
+      'ChannelDeleted',
+      'FeesCollected',
+      'Approval',
+      'Transfer'
+    ]
+
+    events.forEach((type) => this.eventMonitor!.on(type, this.handleBlockchainEvent))
   }
 }
