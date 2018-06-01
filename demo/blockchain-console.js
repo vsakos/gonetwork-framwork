@@ -10,14 +10,16 @@ const process = require('process')
 const fs = require('fs')
 const WalletProvider = require('truffle-wallet-provider')
 const util = require('ethereumjs-util')
+const abi = require('ethereumjs-abi')
 const EthereumWallet = require('ethereumjs-wallet')
-var Contract = require('truffle-contract')
+const Contract = require('truffle-contract')
 const blockchain = require('../lib/blockchain/blockchain')
+const { message, merkletree } = require('../lib/state-channel')
 
-var wallet = null
+let wallet = null
 
-var args = process.argv.slice(2)
-var k = args.indexOf('--generate')
+let args = process.argv.slice(2)
+let k = args.indexOf('--generate')
 if (k >= 0) {
   wallet = require('ethereumjs-wallet').generate()
   fs.writeFileSync('v3_wallet.json', JSON.stringify(wallet.toV3('', [true])))
@@ -25,19 +27,19 @@ if (k >= 0) {
   process.exit(1)
 } else {
   try {
-    var data = JSON.parse(fs.readFileSync('v3_wallet.json'))
+    let data = JSON.parse(fs.readFileSync('v3_wallet.json'))
     console.log(JSON.stringify(data))
     wallet = EthereumWallet.fromV3(data, '', [true])
   } catch (err) {
     console.log('Cannot find v3_wallet.json in the current directory.  You can generate by running this script and passing --generate flag')
   }
 }
-var provider = new WalletProvider(wallet, 'https://ropsten.infura.io/')
+let provider = new WalletProvider(wallet, 'https://ropsten.infura.io/')
 
 const BUILD_DIR = '../smart-contracts/build/contracts/'
 const builtContracts = fs.readdirSync(BUILD_DIR).reduce((result, build) => {
-  var json = JSON.parse(fs.readFileSync(BUILD_DIR + build))
-  var ct = Contract(json)
+  let json = JSON.parse(fs.readFileSync(BUILD_DIR + build))
+  let ct = Contract(json)
   ct.setProvider(provider)
 
   ct.defaults({
@@ -61,12 +63,12 @@ const bcs = new blockchain.BlockchainService(new util.BN(3), function (callback)
 const express = require('express')
 const app = express()
 
-var standardToken = null
-var got = null
-var not = null
-var nettingChannelLibrary = null
-var channelManagerLibrary = null
-var channelManager = null
+let standardToken = null
+let got = null
+let not = null
+let nettingChannelLibrary = null
+let channelManagerLibrary = null
+let channelManager = null
 
 app.use(async function (req, res, next) {
   req._bc = {}
@@ -121,7 +123,7 @@ app.get('/approve', async (req, res) => {
   const token = req.query.token
   const spender = req.query.spender
   const amount = req.query.amount
-  var result = await bcs.approve(new util.BN(req._bn.nonce), new util.BN(1000000000),
+  let result = await bcs.approve(new util.BN(req._bn.nonce), new util.BN(1000000000),
     token,
     spender,
     new util.BN(amount))
@@ -131,11 +133,8 @@ app.get('/approve', async (req, res) => {
 app.get('/createChannel', async (req, res) => {
   req.setTimeout(0)
   const timeout = new util.BN(parseInt(req.query.timeout))
-  const nonce = new util.BN(req.query.nonce)
-  // console.log(partner, timeout, nonce)
-  // res.send("DONE");
-  var result = await bcs.newChannel(
-    nonce,
+  let result = await bcs.newChannel(
+    req._bc.nonce,
     new util.BN(10000000000),
     channelManager.address,
     util.addHexPrefix(req.query.partner),
@@ -145,11 +144,55 @@ app.get('/createChannel', async (req, res) => {
 
 app.get('/deposit', async (req, res) => {
   req.setTimeout(0)
-  var channel = util.toBuffer(util.addHexPrefix(req.query.channel))
+  let channel = util.toBuffer(util.addHexPrefix(req.query.channel))
   const amount = new util.BN(parseInt(req.query.amount))
-  var result = await bcs.deposit(new util.BN(req.query.nonce), new util.BN(1000000000),
+  let result = await bcs.deposit(new util.BN(req._bc.nonce), new util.BN(1000000000),
     channel,
     amount)
+  res.send(result)
+})
+
+app.get('/close', async (req, res) => {
+  req.setTimeout(0)
+  const channel = util.toBuffer((util.addHexPrefix(req.query.channel)))
+  const emptyRoot = (new merkletree.MerkleTree([])).getRoot()
+  const transferred = new util.BN(req.query.transferred)
+
+  const hash = abi.soliditySHA3(['uint256', 'uint256', 'address', 'bytes32'],
+    [
+      req._bc.nonce,
+      transferred,
+      channel,
+      emptyRoot
+    ]
+  )
+
+  const proof = new message.Proof({
+    nonce: req._bc.nonce,
+    transferredAmount: transferred,
+    channelAddress: channel,
+    locksRoot: emptyRoot,
+    messageHash: hash,
+    signature: util.ecsign(hash, wallet.getPrivateKey())
+  })
+
+  const result = await bcs.close(
+    req._bc.nonce,
+    new util.BN(10000000000),
+    channel,
+    proof
+  )
+  res.send(result)
+})
+
+app.get('/settle', async (req, res) => {
+  req.setTimeout(0)
+  const channel = util.toBuffer((util.addHexPrefix(req.query.channel)))
+  const result = await bcs.settle(
+    req._bc.nonce,
+    new util.BN(10000000000),
+    channel
+  )
   res.send(result)
 })
 
