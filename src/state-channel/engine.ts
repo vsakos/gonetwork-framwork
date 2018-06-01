@@ -849,7 +849,7 @@ export class Engine extends events.EventEmitter {
     return true
   }
 
-  runEventMonitor (channelManagerAddress, tokenAddresses = []) {
+  runEventMonitor (channelManagerAddress, tokenAddresses = [], storage?) {
     this.eventMonitor = new Monitoring({
       // TODO edit blockchain service to accept infura network and token instead of url
       ...infuraMonitoring('ropsten', ''),
@@ -858,7 +858,7 @@ export class Engine extends events.EventEmitter {
       tokenAddresses: tokenAddresses,
 
       // TODO persistence?
-      storage: {
+      storage: storage || {
         getItem: (id) => Promise.resolve(null),
         setItem: (id, item) => Promise.resolve(true),
         getAllKeys: () => Promise.resolve([]),
